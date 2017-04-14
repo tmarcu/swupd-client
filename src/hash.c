@@ -281,7 +281,6 @@ int verify_bundle_hash(struct manifest *manifest, struct file *bundle)
 		if (strcmp(current->filename, bundle->filename) != 0) {
 			continue;
 		}
-
 		string_or_die(&cached, "%s/%i/Manifest.%s.%s", state_dir,
 			      current->last_change, current->filename, bundle->hash);
 
@@ -338,8 +337,8 @@ int verify_bundle_hash(struct manifest *manifest, struct file *bundle)
 		if (!verify_file(bundle, local)) {
 			printf("Warning: hash check failed for Manifest.%s for version %i. Deleting it.\n",
 			       current->filename, manifest->version);
-			unlink(local);
 			ret = 1;
+			unlink(local);
 		}
 		if (link(local, cached) != 0) {
 			unlink(cached);

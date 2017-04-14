@@ -431,7 +431,6 @@ static int try_delta_manifest_download(int current, int new, char *component, st
 	char *url = NULL;
 	int ret = 0;
 	struct stat buf;
-
 	if (strcmp(component, "MoM") == 0) {
 		// We don't do MoM deltas.
 		return -1;
@@ -443,17 +442,9 @@ static int try_delta_manifest_download(int current, int new, char *component, st
 
 	string_or_die(&original, "%s/%i/Manifest.%s", state_dir, current, component);
 
-	populate_file_struct(file, original);
-	ret = compute_hash(file, original);
-	if (ret != 0) {
-		goto out;
-	}
-	if (!hash_equal(file->peer->hash, file->hash)) {
-		goto out;
-	}
-
 	string_or_die(&deltafile, "%s/Manifest-%s-delta-from-%i-to-%i", state_dir, component, current, new);
-
+	/* If we cannot get a delta, quit and don't mess with the file struct.
+	 * Populating it early and then exiting early corrupts the manifest list */
 	memset(&buf, 0, sizeof(struct stat));
 	ret = stat(deltafile, &buf);
 	if (ret || buf.st_size == 0) {
@@ -466,25 +457,36 @@ static int try_delta_manifest_download(int current, int new, char *component, st
 		}
 	}
 
+	populate_file_struct(file, original);
+	ret = compute_hash(file, original);
+	if (ret != 0) {
+		goto out;
+	}
+	if (!hash_equal(file->peer->hash, file->hash)) {
+		ret = -1;
+		goto out;
+	}
+
 	/* Now apply the manifest delta */
 	string_or_die(&newfile, "%s/%i/Manifest.%s", state_dir, new, component);
 
 	ret = apply_bsdiff_delta(original, newfile, deltafile);
 	xattrs_copy(original, newfile);
 	if (ret != 0) {
+
 		unlink(newfile);
 	} else if ((ret = xattrs_compare(original, newfile)) != 0) {
 		unlink(newfile);
 	}
 
 	unlink(deltafile);
+	compute_hash(file, newfile); // MUST save new hash!
 
 out:
 	free(original);
 	free(url);
 	free(newfile);
 	free(deltafile);
-
 	return ret;
 }
 
@@ -498,11 +500,14 @@ static int retrieve_manifests(int current, int version, char *component, struct 
 	char *tar;
 	struct stat sb;
 
-	string_or_die(&filename, "%s/%i/Manifest.%s.tar", state_dir, version, component);
+	/* Check for fullfile only, we will not be keeping the .tar around */
+	string_or_die(&filename, "%s/%i/Manifest.%s", state_dir, version, component);
 	if (stat(filename, &sb) == 0) {
 		ret = 0;
 		goto out;
 	}
+	free(filename);
+	string_or_die(&filename, "%s/%i/Manifest.%s.tar", state_dir, version, component);
 
 	if (!check_network()) {
 		ret = -ENOSWUPDSERVER;
@@ -530,7 +535,6 @@ static int retrieve_manifests(int current, int version, char *component, struct 
 		unlink(filename);
 		goto out;
 	}
-
 	string_or_die(&tar, TAR_COMMAND " -C %s/%i -xf %s/%i/Manifest.%s.tar 2> /dev/null",
 		      state_dir, version, state_dir, version, component);
 
@@ -543,7 +547,6 @@ static int retrieve_manifests(int current, int version, char *component, struct 
 	if (ret != 0) {
 		goto out;
 	}
-
 out:
 	free(filename);
 	free(url);
@@ -715,7 +718,6 @@ retry_load:
 	}
 
 	set_untracked_manifest_files(manifest);
-
 	return manifest;
 }
 
