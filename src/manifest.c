@@ -179,6 +179,7 @@ static struct manifest *manifest_from_file(int version, char *component, bool he
 
 	infile = fopen(filename, "rbm");
 	if (infile == NULL) {
+	//	printf("CAN'T OPEN %s\n", filename);
 		free(filename);
 		return NULL;
 	}
@@ -437,6 +438,7 @@ static int try_delta_manifest_download(int current, int new, char *component, st
 	}
 
 	if (!file->peer) {
+		ret = -1;
 		goto out;
 	}
 
@@ -460,6 +462,7 @@ static int try_delta_manifest_download(int current, int new, char *component, st
 	populate_file_struct(file, original);
 	ret = compute_hash(file, original);
 	if (ret != 0) {
+		ret = -1;
 		goto out;
 	}
 	if (!hash_equal(file->peer->hash, file->hash)) {
@@ -478,7 +481,7 @@ static int try_delta_manifest_download(int current, int new, char *component, st
 	} else if ((ret = xattrs_compare(original, newfile)) != 0) {
 		unlink(newfile);
 	}
-
+	//printf("aplied delta\n");
 	unlink(deltafile);
 	compute_hash(file, newfile); // MUST save new hash!
 
@@ -499,10 +502,12 @@ static int retrieve_manifests(int current, int version, char *component, struct 
 	int ret = 0;
 	char *tar;
 	struct stat sb;
+	//printf("in retrieve_manifests\n");
 
 	/* Check for fullfile only, we will not be keeping the .tar around */
 	string_or_die(&filename, "%s/%i/Manifest.%s", state_dir, version, component);
 	if (stat(filename, &sb) == 0) {
+		//printf("Have manifest already!\n");
 		ret = 0;
 		goto out;
 	}
@@ -524,6 +529,7 @@ static int retrieve_manifests(int current, int version, char *component, struct 
 	/* FILE is not set for a MoM, only for bundle manifests */
 	if (file && current < version) {
 		if (try_delta_manifest_download(current, version, component, file) == 0) {
+			//printf("delta applied!\n");
 			return 0;
 		}
 	}
@@ -683,7 +689,9 @@ struct manifest *load_manifest(int current, int version, struct file *file, stru
 {
 	struct manifest *manifest = NULL;
 	int ret = 0;
-	bool retried = false;
+	int retried = 0;
+	//printf("In load_manifest %s %d\n", file->filename, version);
+
 retry_load:
 	ret = retrieve_manifests(current, version, file->filename, file);
 	if (ret != 0) {
@@ -696,21 +704,23 @@ retry_load:
 	}
 
 	if (ret != 0) {
-		if (retried == false) {
+	//	printf("failed to verify bundle\n");
+		if (retried < 1) {
 			remove_manifest_files(file->filename, version, file->hash);
-			retried = true;
+			retried++;
 			goto retry_load;
 		}
 		return NULL;
 	}
-	retried = false;
+	retried++;
 
 	manifest = manifest_from_file(version, file->filename, header_only);
 
 	if (manifest == NULL) {
-		if (retried == false) {
+	//	printf("Manifest is NULL\n");
+		if (retried <= 2) {
 			remove_manifest_files(file->filename, version, file->hash);
-			retried = true;
+			retried++;
 			goto retry_load;
 		}
 		printf("Failed to load %d %s manifest\n", version, file->filename);
@@ -718,6 +728,7 @@ retry_load:
 	}
 
 	set_untracked_manifest_files(manifest);
+	//printf("loaded %s\n", file->filename);
 	return manifest;
 }
 
@@ -850,12 +861,11 @@ void link_manifests(struct manifest *m1, struct manifest *m2)
 	}
 }
 
-/* m1: old manifest
- * m2: new manifest */
-void link_submanifests(struct manifest *m1, struct manifest *m2, struct list *subs1, struct list *subs2)
+void link_new_submanifests(struct manifest *m1, struct manifest *m2, struct list *subs1, struct list *subs2)
 {
 	struct list *list1, *list2;
 	struct file *file1, *file2;
+	//printf("in link_new_submanifests\n");
 
 	m1->manifests = list_sort(m1->manifests, file_sort_filename);
 	m2->manifests = list_sort(m2->manifests, file_sort_filename);
@@ -881,14 +891,84 @@ void link_submanifests(struct manifest *m1, struct manifest *m2, struct list *su
 			list2 = list2->next;
 
 			if (file2->last_change > m1->version && !file2->is_deleted) {
+				if (!subbed1 && subbed2) {
+					account_new_bundle();
+				}
+			}
+			continue;
+		}
+		if (ret < 0) { /*  m1/file1 is before m2/file2 */
+			/* A bundle manifest going missing from the MoM in the
+			 * latest version is a breaking change, only possible
+			 * during a format bump, so don't account for this
+			 * possibility in the stats. */
+			list1 = list1->next;
+			continue;
+		} /* else ret > 0  m1/file1 is after m2/file2 */
+		list2 = list2->next;
+		if (subbed2) {
+			//printf("#2 new bundle\n");
+			account_new_bundle();
+		}
+	}
+
+	// Capture new bundles if they are at the tail end of the list
+	while (list2) {
+		file2 = list2->data;
+		list2 = list2->next;
+		bool subbed2 = component_subscribed(subs2, file2->filename);
+
+		if (subbed2) {
+			//printf("Tail new bundle\n");
+			account_new_bundle();
+		}
+	}
+}
+
+/* m1: old manifest
+ * m2: new manifest */
+void link_submanifests(struct manifest *m1, struct manifest *m2, struct list *subs1, struct list *subs2)
+{
+	struct list *list1, *list2;
+	struct file *file1, *file2;
+	//printf("in link_submanifests\n");
+
+	m1->manifests = list_sort(m1->manifests, file_sort_filename);
+	m2->manifests = list_sort(m2->manifests, file_sort_filename);
+
+	list1 = list_head(m1->manifests);
+	list2 = list_head(m2->manifests);
+
+	while (list1 && list2) { /* m1/file1 matches m2/file2 */
+		int ret;
+		bool subbed1, subbed2;
+		file1 = list1->data;
+		file2 = list2->data;
+		subbed1 = component_subscribed(subs1, file1->filename);
+		subbed2 = component_subscribed(subs2, file2->filename);
+
+		ret = strcmp(file1->filename, file2->filename);
+		if (ret == 0) {
+			file1->peer = file2;
+			file2->peer = file1;
+			file1->deltapeer = file2;
+			file2->deltapeer = file1;
+			list1 = list1->next;
+			list2 = list2->next;
+		///	printf("%s = %s\n", file1->filename, file2->filename);
+
+			if (file2->last_change > m1->version && !file2->is_deleted) {
 				if (subbed1 && subbed2) {
+			//		printf("Bundle changed\n");
 					account_changed_bundle();
 				} else if (!subbed1 && subbed2) {
+			//		printf("Bundle changd\n");
 					account_new_bundle();
 				}
 			}
 			if (file2->last_change > m1->version && file2->is_deleted) {
 				if (subbed1) {
+			//		printf("Bundle deleted\n");
 					account_deleted_bundle();
 				}
 			}
@@ -904,6 +984,7 @@ void link_submanifests(struct manifest *m1, struct manifest *m2, struct list *su
 		} /* else ret > 0  m1/file1 is after m2/file2 */
 		list2 = list2->next;
 		if (subbed2) {
+		//	printf("#2 new bundle\n");
 			account_new_bundle();
 		}
 	}
@@ -915,6 +996,7 @@ void link_submanifests(struct manifest *m1, struct manifest *m2, struct list *su
 		bool subbed2 = component_subscribed(subs2, file2->filename);
 
 		if (subbed2) {
+		//	printf("Tail new bundle\n");
 			account_new_bundle();
 		}
 	}
@@ -924,6 +1006,7 @@ void link_submanifests(struct manifest *m1, struct manifest *m2, struct list *su
  * if component is not specified, pull in any tracked component submanifest */
 struct list *recurse_manifest(struct manifest *manifest, struct list *subs, const char *component)
 {
+	//printf("In recurse %s %d\n", manifest->component, manifest->version);
 	struct list *bundles = NULL;
 	struct list *list;
 	struct file *file;
@@ -933,6 +1016,7 @@ struct list *recurse_manifest(struct manifest *manifest, struct list *subs, cons
 	manifest->contentsize = 0;
 	list = manifest->manifests;
 	while (list) {
+	//	printf("looping in recurse\n");
 		file = list->data;
 		list = list->next;
 
@@ -953,7 +1037,7 @@ struct list *recurse_manifest(struct manifest *manifest, struct list *subs, cons
 		if (version1 > version2) {
 			version1 = version2;
 		}
-
+	//	printf("Recurse calling load with : %s %d %d\n\n", file->filename, version1, version2);
 		sub = load_manifest(version1, version2, file, manifest, false);
 		if (!sub) {
 			list_free_list_and_data(bundles, free_manifest_data);

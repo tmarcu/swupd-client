@@ -352,7 +352,7 @@ int add_subscriptions(struct list *bundles, struct list **subs, int current_vers
 	struct manifest *manifest;
 
 	srand(time(NULL));
-
+	//printf("in add subscriptions\n");
 	iter = list_head(bundles);
 	while (iter) {
 		bundle = iter->data;

@@ -322,8 +322,6 @@ load_server_manifests:
 	timeout = 10;
 
 	/* updating subscribed manifests is done as part of recurse_manifest */
-	set_subscription_versions(server_manifest, current_manifest, &latest_subs);
-	link_submanifests(current_manifest, server_manifest, current_subs, latest_subs);
 
 	/* Read the current collective of manifests that we are subscribed to.
 	 * First load up the old (current) manifests. Statedir could have been cleared
@@ -347,9 +345,10 @@ load_server_manifests:
 
 	current_manifest->files = consolidate_files(current_manifest->files);
 
+	latest_subs = list_clone(current_subs);	set_subscription_versions(server_manifest, current_manifest, &latest_subs);
+	link_submanifests(current_manifest, server_manifest, current_subs, latest_subs);
 	/* The new subscription is seeded from the list of currently installed bundles
 	 * This calls add_subscriptions which recurses for new includes */
-	latest_subs = list_clone(current_subs);
 	grabtime_start(&times, "Add Included Manifests");
 	ret = add_included_manifests(server_manifest, current_version, &latest_subs);
 	grabtime_stop(&times);
@@ -376,6 +375,9 @@ load_server_manifests:
 	server_manifest->files = files_from_bundles(server_manifest->submanifests);
 
 	server_manifest->files = consolidate_files(server_manifest->files);
+
+	set_subscription_versions(server_manifest, current_manifest, &latest_subs);
+	link_new_submanifests(current_manifest, server_manifest, current_subs, latest_subs);
 
 	/* prepare for an update process based on comparing two in memory manifests */
 	link_manifests(current_manifest, server_manifest);
